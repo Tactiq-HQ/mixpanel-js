@@ -1,24 +1,12 @@
 /* eslint camelcase: "off", eqeqeq: "off" */
 import Config from './config';
+import { NpoPromise, Promise } from './promise-polyfill';
+import { window } from './window';
 
-// since es6 imports are static and we run unit tests from the console, window won't be defined when importing this file
-var win;
-if (typeof(window) === 'undefined') {
-    var loc = {
-        hostname: ''
-    };
-    win = {
-        navigator: { userAgent: '' },
-        document: {
-            location: loc,
-            referrer: ''
-        },
-        screen: { width: 0, height: 0 },
-        location: loc
-    };
-} else {
-    win = window;
-}
+// Maximum allowed session recording length
+var MAX_RECORDING_MS = 24 * 60 * 60 * 1000; // 24 hours
+// Maximum allowed value for minimum session recording length
+var MAX_VALUE_FOR_MIN_RECORDING_MS = 8 * 1000; // 8 seconds
 
 /*
  * Saved references to long variable names, so that closure compiler can
@@ -31,11 +19,11 @@ var ArrayProto = Array.prototype,
     slice = ArrayProto.slice,
     toString = ObjProto.toString,
     hasOwnProperty = ObjProto.hasOwnProperty,
-    windowConsole = win.console,
-    navigator = win.navigator,
-    document = win.document,
-    windowOpera = win.opera,
-    screen = win.screen,
+    windowConsole = window.console,
+    navigator = window.navigator,
+    document = window.document,
+    windowOpera = window.opera,
+    screen = window.screen,
     userAgent = navigator.userAgent;
 
 var nativeBind = FuncProto.bind,
@@ -119,6 +107,29 @@ var console_with_prefix = function(prefix) {
         error: log_func_with_prefix(console.error, prefix),
         critical: log_func_with_prefix(console.critical, prefix)
     };
+};
+
+
+var safewrap = function(f) {
+    return function() {
+        try {
+            return f.apply(this, arguments);
+        } catch (e) {
+            console.critical('Implementation error. Please turn on debug and contact support@mixpanel.com.');
+            if (Config.DEBUG){
+                console.critical(e);
+            }
+        }
+    };
+};
+
+var safewrapClass = function(klass) {
+    var proto = klass.prototype;
+    for (var func in proto) {
+        if (typeof(proto[func]) === 'function') {
+            proto[func] = safewrap(proto[func]);
+        }
+    }
 };
 
 
@@ -834,8 +845,8 @@ _.UUID = (function() {
     var T = function() {
         var time = 1 * new Date(); // cross-browser version of Date.now()
         var ticks;
-        if (win.performance && win.performance.now) {
-            ticks = win.performance.now();
+        if (window.performance && window.performance.now) {
+            ticks = window.performance.now();
         } else {
             // fall back to busy loop
             ticks = 0;
@@ -899,6 +910,8 @@ _.UUID = (function() {
 // sending false tracking data
 var BLOCKED_UA_STRS = [
     'ahrefsbot',
+    'ahrefssiteaudit',
+    'amazonbot',
     'baiduspider',
     'bingbot',
     'bingpreview',
@@ -908,7 +921,7 @@ var BLOCKED_UA_STRS = [
     'pinterest',
     'screaming frog',
     'yahoo! slurp',
-    'yandexbot',
+    'yandex',
 
     // a whole bunch of goog-specific crawlers
     // https://developers.google.com/search/docs/advanced/crawling/overview-google-crawlers
@@ -958,7 +971,7 @@ _.HTTPBuildQuery = function(formdata, arg_separator) {
 _.getQueryParam = function(url, param) {
     // Expects a raw URL
 
-    param = param.replace(/[[]/, '\\[').replace(/[\]]/, '\\]');
+    param = param.replace(/[[]/g, '\\[').replace(/[\]]/g, '\\]');
     var regexS = '[\\?&]' + param + '=([^&#]*)',
         regex = new RegExp(regexS),
         results = regex.exec(url);
@@ -1067,15 +1080,9 @@ _.cookie = {
     }
 };
 
-var _localStorageSupported = null;
-var localStorageSupported = function(storage, forceCheck) {
-    if (_localStorageSupported !== null && !forceCheck) {
-        return _localStorageSupported;
-    }
-
+var _testStorageSupported = function (storage) {
     var supported = true;
     try {
-        storage = storage || window.localStorage;
         var key = '__mplss_' + cheap_guid(8),
             val = 'xyz';
         storage.setItem(key, val);
@@ -1086,59 +1093,74 @@ var localStorageSupported = function(storage, forceCheck) {
     } catch (err) {
         supported = false;
     }
-
-    _localStorageSupported = supported;
     return supported;
 };
 
-// _.localStorage
-_.localStorage = {
-    is_supported: function(force_check) {
-        var supported = localStorageSupported(null, force_check);
-        if (!supported) {
-            console.error('localStorage unsupported; falling back to cookie store');
-        }
-        return supported;
-    },
-
-    error: function(msg) {
-        console.error('localStorage error: ' + msg);
-    },
-
-    get: function(name) {
-        try {
-            return window.localStorage.getItem(name);
-        } catch (err) {
-            _.localStorage.error(err);
-        }
-        return null;
-    },
-
-    parse: function(name) {
-        try {
-            return _.JSONDecode(_.localStorage.get(name)) || {};
-        } catch (err) {
-            // noop
-        }
-        return null;
-    },
-
-    set: function(name, value) {
-        try {
-            window.localStorage.setItem(name, value);
-        } catch (err) {
-            _.localStorage.error(err);
-        }
-    },
-
-    remove: function(name) {
-        try {
-            window.localStorage.removeItem(name);
-        } catch (err) {
-            _.localStorage.error(err);
-        }
+var _localStorageSupported = null;
+var localStorageSupported = function(storage, forceCheck) {
+    if (_localStorageSupported !== null && !forceCheck) {
+        return _localStorageSupported;
     }
+    return _localStorageSupported = _testStorageSupported(storage || window.localStorage);
 };
+
+var _sessionStorageSupported = null;
+var sessionStorageSupported = function(storage, forceCheck) {
+    if (_sessionStorageSupported !== null && !forceCheck) {
+        return _sessionStorageSupported;
+    }
+    return _sessionStorageSupported = _testStorageSupported(storage || window.sessionStorage);
+};
+
+function _storageWrapper(storage, name, is_supported_fn) {
+    var log_error = function(msg) {
+        console.error(name + ' error: ' + msg);
+    };
+
+    return {
+        is_supported: function(forceCheck) {
+            var supported = is_supported_fn(storage, forceCheck);
+            if (!supported) {
+                console.error(name + ' unsupported');
+            }
+            return supported;
+        },
+        error: log_error,
+        get: function(key) {
+            try {
+                return storage.getItem(key);
+            } catch (err) {
+                log_error(err);
+            }
+            return null;
+        },
+        parse: function(key) {
+            try {
+                return _.JSONDecode(storage.getItem(key)) || {};
+            } catch (err) {
+                // noop
+            }
+            return null;
+        },
+        set: function(key, value) {
+            try {
+                storage.setItem(key, value);
+            } catch (err) {
+                log_error(err);
+            }
+        },
+        remove: function(key) {
+            try {
+                storage.removeItem(key);
+            } catch (err) {
+                log_error(err);
+            }
+        }
+    };
+}
+
+_.localStorage = _storageWrapper(window.localStorage, 'localStorage', localStorageSupported);
+_.sessionStorage = _storageWrapper(window.sessionStorage, 'sessionStorage', sessionStorageSupported);
 
 _.register_event = (function() {
     // written by Dean Edwards, 2005
@@ -1415,8 +1437,8 @@ _.dom_query = (function() {
     };
 })();
 
-var CAMPAIGN_KEYWORDS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'];
-var CLICK_IDS = ['dclid', 'fbclid', 'gclid', 'ko_click_id', 'li_fat_id', 'msclkid', 'ttclid', 'twclid', 'wbraid'];
+var CAMPAIGN_KEYWORDS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'utm_id', 'utm_source_platform','utm_campaign_id', 'utm_creative_format', 'utm_marketing_tactic'];
+var CLICK_IDS = ['dclid', 'fbclid', 'gclid', 'ko_click_id', 'li_fat_id', 'msclkid', 'sccid', 'ttclid', 'twclid', 'wbraid'];
 
 _.info = {
     campaignParams: function(default_value) {
@@ -1619,7 +1641,14 @@ _.info = {
         return '';
     },
 
-    properties: function() {
+    currentUrl: function() {
+        return window.location.href;
+    },
+
+    properties: function(extra_props) {
+        if (typeof extra_props !== 'object') {
+            extra_props = {};
+        }
         return _.extend(_.strip_empty_properties({
             '$os': _.info.os(),
             '$browser': _.info.browser(userAgent, navigator.vendor, windowOpera),
@@ -1627,7 +1656,7 @@ _.info = {
             '$referring_domain': _.info.referringDomain(document.referrer),
             '$device': _.info.device(userAgent)
         }), {
-            '$current_url': win.location.href,
+            '$current_url': _.info.currentUrl(),
             '$browser_version': _.info.browserVersion(userAgent, navigator.vendor, windowOpera),
             '$screen_height': screen.height,
             '$screen_width': screen.width,
@@ -1635,7 +1664,7 @@ _.info = {
             '$lib_version': Config.LIB_VERSION,
             '$insert_id': cheap_guid(),
             'time': _.timestamp() / 1000 // epoch time in seconds
-        });
+        }, _.strip_empty_properties(extra_props));
     },
 
     people_properties: function() {
@@ -1650,12 +1679,37 @@ _.info = {
     mpPageViewProperties: function() {
         return _.strip_empty_properties({
             'current_page_title': document.title,
-            'current_domain': win.location.hostname,
-            'current_url_path': win.location.pathname,
-            'current_url_protocol': win.location.protocol,
-            'current_url_search': win.location.search
+            'current_domain': window.location.hostname,
+            'current_url_path': window.location.pathname,
+            'current_url_protocol': window.location.protocol,
+            'current_url_search': window.location.search
         });
     }
+};
+
+/**
+ * Returns a throttled function that will only run at most every `waitMs` and returns a promise that resolves with the next invocation.
+ * Throttled calls will build up a batch of args and invoke the callback with all args since the last invocation.
+ */
+var batchedThrottle = function (fn, waitMs) {
+    var timeoutPromise = null;
+    var throttledItems = [];
+    return function (item) {
+        var self = this;
+        throttledItems.push(item);
+
+        if (!timeoutPromise) {
+            timeoutPromise = new Promise(function (resolve) {
+                setTimeout(function () {
+                    var returnValue = fn.apply(self, [throttledItems]);
+                    timeoutPromise = null;
+                    throttledItems = [];
+                    resolve(returnValue);
+                }, waitMs);
+            });
+        }
+        return timeoutPromise;
+    };
 };
 
 var cheap_guid = function(maxlen) {
@@ -1691,6 +1745,17 @@ var extract_domain = function(hostname) {
     return matches ? matches[0] : '';
 };
 
+/**
+ * Check whether we have network connection. default to true for browsers that don't support navigator.onLine (IE)
+ * @returns {boolean}
+ */
+var isOnline = function() {
+    var onLine = window.navigator['onLine'];
+    return _.isUndefined(onLine) || onLine;
+};
+
+var NOOP_FUNC = function () {};
+
 var JSONStringify = null, JSONParse = null;
 if (typeof JSON !== 'undefined') {
     JSONStringify = JSON.stringify;
@@ -1699,31 +1764,38 @@ if (typeof JSON !== 'undefined') {
 JSONStringify = JSONStringify || _.JSONEncode;
 JSONParse = JSONParse || _.JSONDecode;
 
-// EXPORTS (for closure compiler)
-_['toArray']                = _.toArray;
-_['isObject']               = _.isObject;
-_['JSONEncode']             = _.JSONEncode;
-_['JSONDecode']             = _.JSONDecode;
-_['isBlockedUA']            = _.isBlockedUA;
-_['isEmptyObject']          = _.isEmptyObject;
+// UNMINIFIED EXPORTS (for closure compiler)
 _['info']                   = _.info;
-_['info']['device']         = _.info.device;
 _['info']['browser']        = _.info.browser;
 _['info']['browserVersion'] = _.info.browserVersion;
+_['info']['device']         = _.info.device;
 _['info']['properties']     = _.info.properties;
+_['isBlockedUA']            = _.isBlockedUA;
+_['isEmptyObject']          = _.isEmptyObject;
+_['isObject']               = _.isObject;
+_['JSONDecode']             = _.JSONDecode;
+_['JSONEncode']             = _.JSONEncode;
+_['toArray']                = _.toArray;
+_['NPO']                    = NpoPromise;
 
 export {
     _,
-    userAgent,
-    console,
-    win as window,
-    document,
-    navigator,
+    batchedThrottle,
     cheap_guid,
     console_with_prefix,
+    console,
+    document,
     extract_domain,
-    localStorageSupported,
-    JSONStringify,
     JSONParse,
-    slice
+    JSONStringify,
+    isOnline,
+    localStorageSupported,
+    MAX_RECORDING_MS,
+    MAX_VALUE_FOR_MIN_RECORDING_MS,
+    navigator,
+    NOOP_FUNC,
+    safewrap,
+    safewrapClass,
+    slice,
+    userAgent,
 };

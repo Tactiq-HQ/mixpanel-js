@@ -1,6 +1,5 @@
 var mixpanel = require('../build/mixpanel.cjs');
 
-$('#qunit-tests').addClass('hidepass');
 mixpanel.init("MIXPANEL_TOKEN", {
     cookie_name: "test",
     reset_cookie: true,
@@ -12,6 +11,8 @@ mixpanel.init("MIXPANEL_NONBATCHING_TOKEN", {
 }, "nonbatching");
 
 testMixpanel(mixpanel);
+
+QUnit.module('window test');
 
 test('mixpanel object is not attached to window', 1, function() {
     ok(_.isUndefined(window.mixpanel), "window.mixpanel should be undefined");
