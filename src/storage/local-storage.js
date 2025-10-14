@@ -1,15 +1,20 @@
 import { Promise } from '../promise-polyfill';
 import { _, JSONParse, JSONStringify } from '../utils'; // eslint-disable-line camelcase
+import { window } from '../window';
 
 /**
  * @type {import('./wrapper').StorageWrapper}
  */
 var LocalStorageWrapper = function (storageOverride) {
-    this.storage = storageOverride || localStorage;
+    this.storage = storageOverride || window.localStorage;
 };
 
 LocalStorageWrapper.prototype.init = function () {
     return Promise.resolve();
+};
+
+LocalStorageWrapper.prototype.isInitialized = function () {
+    return true;
 };
 
 LocalStorageWrapper.prototype.setItem = function (key, value) {

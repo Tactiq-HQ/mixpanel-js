@@ -4,7 +4,7 @@
 
 import { expect } from 'chai';
 import { SessionRecording } from '../../src/recorder/session-recording';
-import { IncrementalSource, EventType } from '@rrweb/types';
+import { IncrementalSource, EventType } from '@mixpanel/rrweb-types';
 
 import sinon from 'sinon';
 import { window } from '../../src/window';
@@ -101,7 +101,6 @@ describe(`SessionRecording`, function() {
 
     expect(flushSpy.calledOnce).to.be.false;
     expect(sessionRecording.batcher.stopped).to.be.true;
-    expect(sessionRecording.idleTimeoutId).to.be.null;
     expect(sessionRecording.maxTimeoutId).to.be.null;
   });
 
@@ -331,6 +330,29 @@ describe(`SessionRecording`, function() {
     expect(params2.get(`replay_length_ms`)).to.equal((11 * 1000 + RECORD_ENQUEUE_THROTTLE_MS).toString());
 
     expect(params2.get(`batch_start_time`)).to.equal(((NOW_MS + 1000) / 1000).toString());
+  });
+
+  it(`runs the idle timeout handler when timing out`, function () {
+    sessionRecording.startRecording();
+    clock.tick(60 * 1000);
+
+    mockRrweb.emit(EventType.IncrementalSnapshot, IncrementalSource.MouseMove);
+    clock.tick(29 * 60 * 1000);
+    expect(onIdleTimeoutSpy.calledOnce).to.be.false;
+    clock.tick(61 * 1000);
+
+    expect(onIdleTimeoutSpy.calledOnce).to.be.true;
+  });
+
+  it(`will respect the idle timeout even when setTimeout fails (race condition where a browser tab might pause timers)`, function () {
+    sessionRecording.startRecording();
+
+    const rightBeforeTimeout = 30 * 60 * 1000 - 1;
+    clock.tick(rightBeforeTimeout);
+
+    expect(onIdleTimeoutSpy.calledOnce).to.be.false;
+    mockRrweb.emit(EventType.IncrementalSnapshot, IncrementalSource.MouseMove, NOW_MS + rightBeforeTimeout + 2);
+    expect(onIdleTimeoutSpy.calledOnce).to.be.true;
   });
 
   it(`respects tracking opt-out check`, async function() {

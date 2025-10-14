@@ -262,18 +262,8 @@ MixpanelPeople.prototype.union = addOptOutCheckMixpanelPeople(function(list_name
  * @param {Function} [callback] If provided, the callback will be called when the server responds
  * @deprecated
  */
-MixpanelPeople.prototype.track_charge = addOptOutCheckMixpanelPeople(function(amount, properties, callback) {
-    if (!_.isNumber(amount)) {
-        amount = parseFloat(amount);
-        if (isNaN(amount)) {
-            console.error('Invalid value passed to mixpanel.people.track_charge - must be a number');
-            return;
-        }
-    }
-
-    return this.append('$transactions', _.extend({
-        '$amount': amount
-    }, properties), callback);
+MixpanelPeople.prototype.track_charge = addOptOutCheckMixpanelPeople(function() {
+    console.error('mixpanel.people.track_charge() is deprecated and no longer has any effect.');
 });
 
 /*
@@ -347,7 +337,7 @@ MixpanelPeople.prototype._send_request = function(data, callback) {
     return this._mixpanel._track_or_batch({
         type: 'people',
         data: date_encoded_data,
-        endpoint: this._get_config('api_host') + '/' +  this._get_config('api_routes')['engage'],
+        endpoint: this._mixpanel.get_api_host('people') + '/' +  this._get_config('api_routes')['engage'],
         batcher: this._mixpanel.request_batchers.people
     }, callback);
 };

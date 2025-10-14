@@ -9,6 +9,7 @@
         old_handler_run = true;
         return true;
     };
+    var loadedRecorderProject = false; // global script tag check
 
     var _jsc = [];
     var mpmodule = function(module_name, extra_setup, extra_teardown) {
@@ -88,6 +89,22 @@
         this.xhr.restore();
     }
 
+    /* sendBeacon recording - stubs navigator.sendBeacon for later assertion in tests
+     * usage:
+     *     mpmodule("module name", startRecordingSendBeaconRequests, stopRecordingSendBeaconRequests);
+     */
+    function startRecordingSendBeaconRequests() {
+        if (navigator.sendBeacon) {
+            this.sendBeaconStub = sinon.stub(navigator, 'sendBeacon').returns(true);
+        }
+    }
+
+    function stopRecordingSendBeaconRequests() {
+        if (this.sendBeaconStub) {
+            this.sendBeaconStub.restore();
+        }
+    }
+
     /* XMLHttpRequest recording - writes "fake" XHR request objects to this.requests for later assertion in tests
      * usage:
      *     // run from within a test module, `this` (QUnit test object) should be bound at callsite:
@@ -110,6 +127,19 @@
     function getRequestData(request, keyPath) {
         try {
             var data = JSON.parse(decodeURIComponent(request.requestBody.match(/data=([^&]+)/)[1]));
+            (keyPath || []).forEach(function(key) {
+                data = data[key];
+            });
+            return data;
+        } catch (err) {
+            console.error(err);
+            return null;
+        }
+    }
+
+    function getSendBeaconData(beaconRequest, keyPath) {
+        try {
+            var data = JSON.parse(decodeURIComponent(beaconRequest.match(/data=([^&]+)/)[1]));
             (keyPath || []).forEach(function(key) {
                 data = data[key];
             });
@@ -337,12 +367,16 @@
         }
     }
 
-    function simulateMouseClick(element) {
-        if (element.click) {
+    function simulateMouseClick(element, options) {
+        options = options || {};
+        var x = options.x || 0;
+        var y = options.y || 0;
+        
+        if (element.click && options.x === undefined && options.y === undefined) {
             element.click();
         } else {
             var evt = element.ownerDocument.createEvent('MouseEvents');
-            evt.initMouseEvent('click', true, true, element.ownerDocument.defaultView, 1, 0, 0, 0, 0, false, false, false, false, 0, null);
+            evt.initMouseEvent('click', true, true, element.ownerDocument.defaultView, 1, x, y, x, y, false, false, false, false, 0, null);
             element.dispatchEvent(evt);
         }
     }
@@ -494,6 +528,18 @@
 
             ok(with_ip.src.indexOf('ip=1') > 0, '_send_request should send ip=1 by default');
             ok(without_ip.src.indexOf('ip=0') > 0, '_send_request should send ip=0 when the config ip=false');
+        });
+
+        test("additional query string is honored", 1, function() {
+            mixpanel.test.set_config({
+                img: true,
+                api_extra_query_params: {some_param: 'some_value', another_param: 'another_value'}
+            });
+
+            mixpanel.test.track("api_extra_query_params set");
+            var with_additional_query_params = $('img').get(-1);
+
+            ok(with_additional_query_params.src.indexOf('some_param=some_value&another_param=another_value') > 0, '_send_request should send extra_query_params when configured');
         });
 
         test("properties on blacklist are not sent", 4, function() {
@@ -1131,6 +1177,37 @@
                 }), "tracking properties sent correctly");
             });
         }
+
+        mpmodule("disable_persistence")
+            
+        function testNoCallsToBrowserStorage(persistenceType) {
+            test(persistenceType + " persistence type should make no calls to browser storage APIs", 4, function() {            
+                var idbOpenSpy = sinon.spy(window.indexedDB, `open`);
+                var localStorageSetItemSpy = sinon.spy(window.localStorage, `setItem`);
+                var sessionStorageSetItemSpy = sinon.spy(window.sessionStorage, `setItem`);
+                var originalCookie = document.cookie;
+    
+                mixpanel.init('persistence_lib', {
+                    persistence: persistenceType,
+                    persistence_name: name,
+                    batch_requests: false,
+                    disable_persistence: true
+                }, 'persistence_lib');
+    
+                stop();
+                setTimeout(function() {
+                    same(idbOpenSpy.callCount, 0, "IDB should not be opened");
+                    same(localStorageSetItemSpy.callCount, 0, "localStorage.setItem should not be called");
+                    same(sessionStorageSetItemSpy.callCount, 0, "sessionStorage.setItem should not be called");
+                    same(document.cookie, originalCookie, "document.cookie shouldn't have been changed");
+                    sinon.restore();
+                    start();
+                }, 500);
+            });
+        }
+
+        testNoCallsToBrowserStorage('cookie');
+        testNoCallsToBrowserStorage('localStorage');
 
         mpmodule("mixpanel");
 
@@ -2826,65 +2903,6 @@
 
         });
 
-        mpmodule("mixpanel.people.track_charge");
-
-        test("track_charge (basic functionality)", 2, function() {
-            var amt = 50,
-                amt_2 = 20,
-                charge = {
-                    '$amount': amt
-                }
-            charge_2 = {
-                '$amount': amt_2
-            }
-
-            var i = mixpanel.people.track_charge(amt);
-            ok(contains_obj(i['$append']['$transactions'], charge), '.track_charge() correctly appends to the $transactions object');
-
-            mixpanel.test.identify(this.id);
-            i = mixpanel.test.people.track_charge(amt_2);
-            ok(contains_obj(i['$append']['$transactions'], charge_2), '.track_charge() works for additional libs');
-        });
-
-        test("track_charge accepts properties", 1, function() {
-            var amt = 50,
-                time = new Date('feb 1 2012'),
-                charge = {
-                    '$amount': amt,
-                    '$time': date_to_ISO(time)
-                };
-
-            var i = mixpanel.people.track_charge(amt, {
-                '$time': time
-            });
-            ok(contains_obj(i['$append']['$transactions'], charge), '.track_charge() correctly appends to the $transactions object');
-        });
-
-        test("track_charge handles numeric strings", 1, function() {
-            var amt = " 40.56 ",
-                charge = {
-                    '$amount': 40.56
-                }
-            var i = mixpanel.people.track_charge(amt);
-
-            ok(contains_obj(i['$append']['$transactions'], charge), '.track_charge() correctly converts numeric strings');
-        });
-
-        // callsError may fail if there is no console, so we can't expect 2 tests
-        test("track_charge handles invalid values", function() {
-            if (window.console) {
-                callsError(function(restore_console) {
-                    mixpanel.people.track_charge();
-                    restore_console();
-                }, ".track_charge() should call an error if called with no arguments");
-
-                callsError(function(restore_console) {
-                    mixpanel.people.track_charge("asdf");
-                    restore_console();
-                }, ".track_charge() should call an error if called with a non-numeric string argument");
-            }
-        });
-
         mpmodule("mixpanel.people.clear_charges");
 
         test("clear_charges", 1, function() {
@@ -3351,7 +3369,7 @@
             same(mixpanel._.info.device(a), 'Windows Phone');
         });
 
-        test('browser', 38, function() {
+        test('browser', 40, function() {
             // facebook mobile
             var a = "Mozilla/5.0 (iPad; CPU OS 7_0_2 like Mac OS X) AppleWebKit/537.51.1 (KHTML, like Gecko) Mobile/11A501 [FBAN/FBIOS;FBAV/6.9.1;FBBV/1102303;FBDV/iPad2,7;FBMD/iPad;FBSN/iPhone OS;FBSV/7.0.2;FBSS/1; FBCR/Verizon;FBID/tablet;FBLC/en_US;FBOP/1]";
             same(mixpanel._.info.browser(a), 'Facebook Mobile');
@@ -3436,9 +3454,14 @@
             var a = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/5.2 Chrome/51.0.2704.106 Safari/537.36";
             same(mixpanel._.info.browser(a), 'Samsung Internet');
             notOk(mixpanel._.isBlockedUA(a));
+
+            // whale browser
+            var a = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; ; NCLIENT50_AAPECCA5738500) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.5249.114 Whale/3.17.145.12 Safari/537.36";
+            same(mixpanel._.info.browser(a), 'Whale Browser');
+            notOk(mixpanel._.isBlockedUA(a));
         });
 
-        test('browserVersion', 3, function() {
+        test('browserVersion', 4, function() {
             // edge
             var a = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.74 Safari/537.36 Edg/79.0.309.43";
             same(mixpanel._.info.browserVersion(a), 79.0);
@@ -3449,6 +3472,10 @@
             // samsung browser
             var a = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/5.2 Chrome/51.0.2704.106 Safari/537.36";
             same(mixpanel._.info.browserVersion(a), 5.2);
+
+            // whale browser
+            var a = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; ; NCLIENT50_AAPECCA5738500) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.5249.114 Whale/3.17.145.12 Safari/537.36";
+            same(mixpanel._.info.browserVersion(a), 3.17);
         });
 
         mpmodule('mixpanel.reset');
@@ -3704,6 +3731,33 @@
                 );
             });
 
+            test("tracking supports additional query string params", 5, function() {
+                mixpanel.test.set_config({
+                    api_extra_query_params: {
+                        some_param: 'some_value',
+                        another_param: 'another_value'
+                    }
+                });
+
+                mixpanel.test.track("api_extra_query_params set");
+
+                same(this.requests.length, 1, "track should have fired off a request");
+                var req = this.requests[0];
+                same(req.method, 'POST');
+                same(
+                    req.requestBody.indexOf('data='), 0,
+                    'POST request should have transmitted data in request body'
+                );
+                ok(
+                    req.url.indexOf('some_param=some_value') >= 0,
+                    'api_extra_query_params should be included in the URL'
+                );
+                ok(
+                    req.url.indexOf('another_param=another_value') >= 0,
+                    'api_extra_query_params should be included in the URL'
+                );
+            });
+
             if (navigator.sendBeacon) {
                 test("specifying GET overrides sendBeacon transport", 3, function() {
                     mixpanel.test.set_config({api_method: 'GET', api_transport: 'sendBeacon'});
@@ -3891,7 +3945,7 @@
                 same(this.requests.length, 0, "autocapture init with pageview=false should not fire request on load");
             });
 
-            test("autocapture tracks click events", 4, function() {
+            test("autocapture tracks click events", 5, function() {
                 mixpanel.init("autocapture_test_token", {
                     autocapture: {
                         pageview: false,
@@ -3912,10 +3966,11 @@
                 same(this.requests.length, 1, "click event should fire request");
                 var last_event = getRequestData(this.requests[0]);
                 same(last_event.event, "$mp_click", "last request should be $mp_click event");
+                notOk('$captured_for_heatmap' in last_event.properties, "click event should not be tagged as captured for heatmap");
                 ok(originalHandlerCalled, "original click handler should also have been called");
             });
 
-            test("autocapture click events include relevant properties", 7, function() {
+            test("autocapture click events include relevant properties", 9, function() {
                 mixpanel.init("autocapture_test_token", {
                     autocapture: {
                         pageview: false,
@@ -3936,6 +3991,8 @@
                 same(props.$el_classes, [anchor.name], "click event should include classes");
                 ok(props.$viewportHeight > 0, "click event should include viewport height");
                 ok(props.$viewportWidth > 0, "click event should include viewport width");
+                ok(props.$pageHeight > 0, "click event should include page height");
+                ok(props.$pageWidth > 0, "click event should include page width");
                 notOk('$el_id' in props, "click event should not include id when not present");
             });
 
@@ -4164,7 +4221,8 @@
                             // only track elements with /foobar/ links
                             return !!href && href.startsWith('/foobar');
                         },
-                        allow_selectors: [".track-only-me"]
+                        allow_selectors: [".track-only-me"],
+                        rage_click: false,
                     },
                     batch_requests: false
                 }, 'acclicks');
@@ -4440,6 +4498,553 @@
 
                 simulateMouseClick(anchor.e);
                 same(this.requests.length, 2, "click event should not have fired request");
+            });
+
+            // (batch_requests: false) causes page_leave events to use sendBeacon transport
+            mpmodule("page leave", function() {
+                this.clock = sinon.useFakeTimers();
+                startRecordingSendBeaconRequests.call(this);
+            }, function() {
+                this.clock.restore();
+                stopRecordingSendBeaconRequests.call(this);
+            });
+
+            test("autocapture tracks max scroll depth on page leave for visibilitychange", 9, function() {
+                // Mock clientHeight before mixpanel initialization so scroll tracking captures it
+                Object.defineProperty(document.documentElement, 'clientHeight', {
+                    writable: true,
+                    value: 100,
+                });
+
+                Object.defineProperty(window, 'innerHeight', {
+                    writable: true,
+                    value: 100
+                });
+
+                mixpanel.init("scroll_depth_test", {
+                    record_heatmap_data: true,
+                    batch_requests: false
+                }, 'scrolltest');
+
+                // Mock scrollY for testing since scrollTo doesn't work in test environment
+                Object.defineProperty(window, 'scrollY', {
+                    writable: true,
+                    value: 600
+                });
+                Object.defineProperty(document.body, 'scrollHeight', {
+                    writable: true,
+                    value: 1100
+                });
+
+                var supportsScrollEnd = 'onscrollend' in window;
+                if (!supportsScrollEnd) {
+                    var scrollEvent1 = new Event('scroll');
+                    window.dispatchEvent(scrollEvent1);
+                    this.clock.tick(100);
+                } else {
+                    var scrollEvent1 = new Event('scrollend');
+                    window.dispatchEvent(scrollEvent1);
+                }
+
+                // Scroll back up to 400px (max depth should stay at 600px)
+                Object.defineProperty(window, 'scrollY', {
+                    writable: true,
+                    value: 400
+                });
+
+                if (!supportsScrollEnd) {
+                    var scrollEvent2 = new Event('scroll');
+                    window.dispatchEvent(scrollEvent2);
+                    this.clock.tick(100);
+                } else {
+                    var scrollEvent2 = new Event('scrollend');
+                    window.dispatchEvent(scrollEvent2);
+                }
+
+                this.sendBeaconStub.resetHistory();
+
+                // Simulate page leave by changing document visibility to hidden
+                Object.defineProperty(document, 'hidden', {
+                    writable: true,
+                    value: true
+                });
+                var visibilityChangeEvent = new Event('visibilitychange');
+                document.dispatchEvent(visibilityChangeEvent);
+                same(this.sendBeaconStub.getCalls().length, 1, "should send one scroll depth event on page leave");
+                var scrollDepthEvent = getSendBeaconData(this.sendBeaconStub.getCalls()[0].args[1]);
+                same(scrollDepthEvent.event, "$mp_page_leave", "should send $mp_page_leave event");
+                same(scrollDepthEvent.properties.$max_scroll_percentage, 60, "should send correct max scroll depth percentage");
+                same(scrollDepthEvent.properties.$max_scroll_view_depth, 700, "should send max scroll view position");
+                same(scrollDepthEvent.properties.$viewportHeight, 100, "should send fold line height");
+                same(scrollDepthEvent.properties.$scroll_height, 1100, "should send scroll height");
+                ok(scrollDepthEvent.properties.$event_type, "should have event_type property");
+                ok(scrollDepthEvent.properties.$current_url, "should have pathname property");
+
+                // Simulate coming back to the page (visibility becomes visible again)
+                Object.defineProperty(document, 'hidden', {
+                    writable: true,
+                    value: false
+                });
+                var visibilityBackEvent = new Event('visibilitychange');
+                document.dispatchEvent(visibilityBackEvent);
+
+                this.sendBeaconStub.resetHistory();
+
+                Object.defineProperty(document, 'hidden', {
+                    writable: true,
+                    value: true
+                });
+                var visibilityLeaveAgainEvent = new Event('visibilitychange');
+                document.dispatchEvent(visibilityLeaveAgainEvent);
+
+                // Verify that no additional scroll depth event is sent (no double tracking)
+                same(this.sendBeaconStub.getCalls().length, 0, "should not send scroll depth event again - no double tracking allowed");
+            });
+
+            test("autocapture tracks max scroll depth on mp_locationchange event correctly", 12, function() {
+                // Mock clientHeight before mixpanel initialization so scroll tracking captures it
+                Object.defineProperty(document.documentElement, 'clientHeight', {
+                    writable: true,
+                    value: 100,
+                });
+
+                Object.defineProperty(window, 'innerHeight', {
+                    writable: true,
+                    value: 100
+                });
+
+                mixpanel.init("scroll_depth_test", {
+                    record_heatmap_data: true,
+                    batch_requests: false,
+                    autocapture: { pageview: false }
+                }, 'scrolltest');
+
+                // Mock scrollY for testing since scrollTo doesn't work in test environment
+                Object.defineProperty(window, 'scrollY', {
+                    writable: true,
+                    value: 1000
+                });
+                Object.defineProperty(document.body, 'scrollHeight', {
+                    writable: true,
+                    value: 1100
+                });
+
+                var supportsScrollEnd = 'onscrollend' in window;
+                if (!supportsScrollEnd) {
+                    var scrollEvent1 = new Event('scroll');
+                    window.dispatchEvent(scrollEvent1);
+                    this.clock.tick(100);
+                } else {
+                    var scrollEvent1 = new Event('scrollend');
+                    window.dispatchEvent(scrollEvent1);
+                }
+
+                // Scroll back up to 400px (max depth should stay at 600px)
+                Object.defineProperty(window, 'scrollY', {
+                    writable: true,
+                    value: 400
+                });
+
+                if (!supportsScrollEnd) {
+                    var scrollEvent2 = new Event('scroll');
+                    window.dispatchEvent(scrollEvent2);
+                    this.clock.tick(100);
+                } else {
+                    var scrollEvent2 = new Event('scrollend');
+                    window.dispatchEvent(scrollEvent2);
+                }
+
+                this.sendBeaconStub.resetHistory();
+
+                var original_url = window.location.href;
+                window.history.pushState({ path: original_url }, '', original_url);
+                same(this.sendBeaconStub.getCalls().length, 0, "should not send scroll depth event since url stays the same");
+                var next_url = window.location.href + '#newfragment';
+                window.history.pushState({ path: next_url }, '', next_url);
+
+                same(this.sendBeaconStub.getCalls().length, 1, "should send one scroll depth event on mp_locationchange");
+                var scrollDepthEvent = getSendBeaconData(this.sendBeaconStub.getCalls()[0].args[1]);
+                same(scrollDepthEvent.event, "$mp_page_leave", "should send $mp_page_leave event");
+                same(scrollDepthEvent.properties.$max_scroll_percentage, 100, "should send correct max scroll depth percentage");
+                same(scrollDepthEvent.properties.$max_scroll_view_depth, 1100, "should send max scroll view position");
+                same(scrollDepthEvent.properties.$viewportHeight, 100, "should send fold line height");
+                same(scrollDepthEvent.properties.$scroll_height, 1100, "should send scroll height");
+                ok(scrollDepthEvent.properties.$event_type, "should have event_type property");
+                ok(next_url !== original_url, "urls should be different");
+                same(scrollDepthEvent.properties.$current_url, original_url, "should have the same current_url as prior to navigation");
+
+                this.sendBeaconStub.resetHistory();
+                Object.defineProperty(document, 'hidden', {
+                    writable: true,
+                    value: true
+                });
+                var visibilityChangeEvent = new Event('visibilitychange');
+                document.dispatchEvent(visibilityChangeEvent);
+
+                
+                same(getSendBeaconData(this.sendBeaconStub.getCalls()[0].args[1]).properties.$max_scroll_view_depth, 100, "fragment position should be handled by scrollend listener not on location change");
+
+
+                // Reset beacon requests to test double tracking prevention
+                this.sendBeaconStub.resetHistory();
+                window.history.pushState({ path: next_url }, '', next_url);
+                same(this.sendBeaconStub.getCalls().length, 0, "should not send scroll depth for the same url");
+                window.history.pushState({ path: original_url}, '', original_url);
+            });
+
+            mpmodule("rage click", function() {
+                this.clock = sinon.useFakeTimers();
+                startRecordingXhrRequests.call(this);
+            }, function() {
+                this.clock.restore();
+                stopRecordingXhrRequests.call(this);
+            });
+
+            test("autocapture tracks rage click events when enabled", 3, function() {
+                mixpanel.init("autocapture_test_token", {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        rage_click: true,
+                        capture_text_content: true
+                    },
+                    batch_requests: false
+                }, 'acrageclick');
+
+                var anchor = ele_with_class("Click me button");
+                anchor.e.onclick = function() { return false; }
+                
+                // Simulate 4 rapid clicks within threshold (5px apart each) - now needs 4 clicks
+                simulateMouseClick(anchor.e, {x: 100, y: 100});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 105, y: 105});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 110, y: 110});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 115, y: 115});
+
+                // Should have 5 events: 4 regular clicks + 1 rage click
+                same(this.requests.length, 5, "should have 4 click events + 1 rage click event");
+                
+                var rageClickEvent = null;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_rage_click') {
+                        rageClickEvent = event;
+                        break;
+                    }
+                }
+                
+                ok(rageClickEvent !== null, "should have detected a rage click event");
+                same(rageClickEvent.properties.$el_text, "Click me button", "rage click event should include correct element text");
+            });
+
+            test("autocapture does not track rage clicks when disabled", 6, function() {
+                mixpanel.init("autocapture_test_token", {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        rage_click: false
+                    },
+                    batch_requests: false
+                }, 'acrageclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; }
+
+                // Simulate 4 rapid clicks with close coordinates (would trigger rage click if enabled)
+                simulateMouseClick(anchor.e, {x: 100, y: 100});
+                simulateMouseClick(anchor.e, {x: 105, y: 105});
+                simulateMouseClick(anchor.e, {x: 110, y: 110});
+                simulateMouseClick(anchor.e, {x: 115, y: 115});
+
+                // Should only have 4 regular click events, no rage click
+                same(this.requests.length, 4, "should have 4 click events only");
+                
+                var hasRageClick = false;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_rage_click') {
+                        hasRageClick = true;
+                        break;
+                    }
+                }
+                
+                notOk(hasRageClick, "should not have detected any rage click events");
+                same(getRequestData(this.requests[0]).event, "$mp_click", "all events should be regular clicks");
+                same(getRequestData(this.requests[1]).event, "$mp_click", "all events should be regular clicks");
+                same(getRequestData(this.requests[2]).event, "$mp_click", "all events should be regular clicks");
+                same(getRequestData(this.requests[3]).event, "$mp_click", "all events should be regular clicks");
+            });
+
+            test("autocapture rage click respects distance threshold", 2, function() {
+                mixpanel.init("autocapture_test_token", {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        rage_click: true
+                    },
+                    batch_requests: false
+                }, 'acrageclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; }
+                
+                // Simulate 4 clicks far apart (beyond threshold)
+                simulateMouseClick(anchor.e, {x: 100, y: 100});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 150, y: 150});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 200, y: 200});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 250, y: 250});
+
+                // Should only have 4 regular click events, no rage click due to distance
+                same(this.requests.length, 4, "should have 4 click events only");
+                
+                var hasRageClick = false;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_rage_click') {
+                        hasRageClick = true;
+                        break;
+                    }
+                }
+                
+                notOk(hasRageClick, "should not detect rage click when clicks are too far apart");
+            });
+
+            test("autocapture does not track clicks and rage clicks when autocapture is disabled", 1, function() {
+                mixpanel.init("autocapture_test_token", {
+                    autocapture: false,
+                    batch_requests: false
+                }, 'acrageclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; }
+                
+                // Simulate 4 rapid clicks within threshold (5px apart each)
+                simulateMouseClick(anchor.e, {x: 100, y: 100});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 105, y: 105});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 110, y: 110});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 115, y: 115});
+
+                // Should have no click/rage click events since autocapture is disabled
+                same(this.requests.length, 0, "should have no events when autocapture is disabled");
+            });
+
+            test("rage click uses the custom click_count config", 4, function() {
+                mixpanel.init("autocapture_test_token", {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        rage_click: {
+                            click_count: 4
+                        }
+                    },
+                    batch_requests: false
+                }, 'acrageclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; }
+                
+                simulateMouseClick(anchor.e, {x: 100, y: 100});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 105, y: 105});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 110, y: 110});
+
+                same(this.requests.length, 3, "should have 3 click events only with custom click_count=4, no rage clicks");
+                
+                var hasRageClick = false;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_rage_click') {
+                        hasRageClick = true;
+                        break;
+                    }
+                }
+                
+                notOk(hasRageClick, "should not detect rage click with only 3 clicks when click_count=4");
+
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 110, y: 110});
+
+                same(this.requests.length, 5, "should have 4 click events and 1 rage click event");
+                hasRageClick = false;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_rage_click') {
+                        hasRageClick = true;
+                        break;
+                    }
+                }
+                ok(hasRageClick, "should detect rage click with when click_count=4");
+            });
+
+            test("rage click allows overriding all config properties", 2, function() {
+                mixpanel.init("autocapture_test_token", {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        rage_click: {
+                            click_count: 4,
+                            timeout_ms: 2000,
+                            threshold_px: 50
+                        }
+                    },
+                    batch_requests: false
+                }, 'acrageclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; }
+                
+                simulateMouseClick(anchor.e, {x: 100, y: 100});
+                this.clock.tick(1000);
+                simulateMouseClick(anchor.e, {x: 105, y: 105});
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 110, y: 110});                
+                this.clock.tick(100);
+                simulateMouseClick(anchor.e, {x: 145, y: 145});
+                
+                same(this.requests.length, 5, "should have 4 click events + 1 rage click event with custom config");
+                
+                var rageClickEvent = null;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_rage_click') {
+                        rageClickEvent = event;
+                        break;
+                    }
+                }
+                ok(rageClickEvent !== null, "should detect rage click with 4 clicks when click_count=4");
+            });
+
+            mpmodule('dead click', function() {
+                this.clock = sinon.useFakeTimers();
+                startRecordingXhrRequests.call(this);
+            }, function() {
+                this.clock.restore();
+                stopRecordingXhrRequests.call(this);
+            });
+
+            test('autocapture tracks dead click events when enabled', 3, function() {
+                this.clock.tick(1000);
+                mixpanel.init('autocapture_test_token', {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        dead_click: true,
+                        capture_text_content: true
+                    },
+                    batch_requests: false
+                }, 'acdeadclick');
+
+                var anchor = ele_with_class('Click me button');
+
+                simulateMouseClick(anchor.e);
+                
+                // Wait for dead click timeout
+                this.clock.tick(500);
+                
+                // Should have 2 events: 1 regular click + 1 dead click
+                same(this.requests.length, 2, 'should have 1 click event + 1 dead click event');
+
+                var deadClickEvent = null;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_dead_click') {
+                        deadClickEvent = event;
+                        break;
+                    }
+                }
+
+                ok(deadClickEvent !== null, 'should have detected a dead click event');
+                same(deadClickEvent.properties.$el_text, 'Click me button', 'dead click event should include correct element text');
+            });
+
+            test('autocapture does not track dead clicks when disabled', 2, function() {
+                this.clock.tick(1000);
+                mixpanel.init('autocapture_test_token', {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        dead_click: false
+                    },
+                    batch_requests: false
+                }, 'acdeadclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; };
+
+                simulateMouseClick(anchor.e);
+
+                // Wait for dead click timeout
+                this.clock.tick(500);
+
+                same(this.requests.length, 1, 'should have 1 click event only');
+
+                var hasDeadClick = false;
+                for (var i = 0; i < this.requests.length; i++) {
+                    var event = getRequestData(this.requests[i]);
+                    if (event.event === '$mp_dead_click') {
+                        hasDeadClick = true;
+                        break;
+                    }
+                }
+
+                notOk(hasDeadClick, 'should not have detected any dead click events');
+            });
+
+            test('dead click uses custom timeout configuration', 2, function() {
+                this.clock.tick(1000);
+                mixpanel.init('autocapture_test_token', {
+                    autocapture: {
+                        pageview: false,
+                        click: true,
+                        dead_click: {
+                            timeout_ms: 1000
+                        }
+                    },
+                    batch_requests: false
+                }, 'acdeadclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; };
+
+                simulateMouseClick(anchor.e);
+
+                // Wait for 500ms timeout (should not trigger dead click yet)
+                this.clock.tick(500);
+                same(this.requests.length, 1, 'should have 1 click event only before custom timeout');
+
+                // Wait for custom timeout to complete
+                this.clock.tick(500);
+
+                // Should now have dead click event
+                same(this.requests.length, 2, 'should have click + dead click after custom timeout');
+            });
+
+            test('autocapture does not track dead clicks when autocapture is disabled', 1, function() {
+                this.clock.tick(1000);
+                mixpanel.init('autocapture_test_token', {
+                    autocapture: false,
+                    batch_requests: false
+                }, 'acdeadclick');
+
+                var anchor = ele_with_class();
+                anchor.e.onclick = function() { return false; };
+
+                simulateMouseClick(anchor.e);
+
+                // Wait for dead click timeout
+                this.clock.tick(2000);
+
+                // Should have no events since autocapture is disabled
+                same(this.requests.length, 0, 'should have no events when autocapture is disabled');
             });
         }
 
@@ -5257,6 +5862,31 @@
                 ok(typeof(tab_id) === "string", "tab id is a string");
                 ok(tab_id !== mixpanel.test.get_tab_id(), "tab ID has changed since the flag to generate a new tab ID was set");
             });
+
+            module("tab_id when disable_persistence: true", {
+                setup: function() {
+                    this.token = rand_name();
+                    this.id = rand_name();
+
+                    mixpanel.init(this.token, {
+                        batch_requests: false,
+                        disable_persistence: true,
+                        debug: true
+                    }, "test");
+                },
+                teardown: function() {
+                    clearAllLibInstances();
+                }
+            });
+
+            test("no tab id is persisted in session storage", 3, function () {
+                var tab_id = mixpanel.test.get_tab_id();
+                ok(tab_id === null, "tab id is null");
+
+                var stored_tab_id = window.sessionStorage.getItem("mp_tab_id_test_" + this.token);
+                ok(stored_tab_id === null, "no tab id is stored in sessionStorage");
+                ok(Object.keys(window.sessionStorage).length === 0, "sessionStorage is empty");
+            });
         }
 
         if (!window.COOKIE_FAILURE_TEST) { // GDPR functionality cannot operate without cookies
@@ -5518,7 +6148,6 @@
             gdprTestMethod('increment'   , ['prop_name' , 1              ]);
             gdprTestMethod('append'      , ['prop_name' , 'prop_value'   ]);
             gdprTestMethod('union'       , ['prop_name' , 'prop_value'   ]);
-            gdprTestMethod('track_charge', [1           , {prop: 'value'}]);
 
             test('opt out of cookies', 42, function() {
                 var name;
@@ -6184,6 +6813,12 @@
                     this.randomStub = sinon.stub(Math, 'random');
                     this.fetchStub = sinon.stub(window, 'fetch');
 
+                    this.xhr = sinon.useFakeXMLHttpRequest();
+                    this.requests = [];
+                    this.xhr.onCreate = _.bind(function(req) {
+                        this.requests.push(req);
+                    }, this);
+
                     // realistic successful response
                     this.fetchStub.returns(Promise.resolve(new Response(JSON.stringify({code: 200, status: 'OK'}), {
                         status: 200,
@@ -6193,7 +6828,8 @@
                     })));
 
                     this.initMixpanelRecorder = function (extraConfig) {
-                        const config = Object.assign({
+                        loadedRecorderProject = true;
+                        var config = Object.assign({
                             debug: true,
                             record_sessions_percent: 0,
                             recorder_src: recorderSrc
@@ -6252,6 +6888,11 @@
                             return this.waitForRecordingStarted();
                         }
                     } else {
+                        if (!loadedRecorderProject) {
+                            // we should not have any global recorder object yet; but it may exist
+                            // due to other mixpanel instances finding orphaned recording data in IDB
+                            delete window['__mp_recorder'];
+                        }
                         this.waitForRecorderLoad = function () {
                             return untilDonePromise(_.bind(function () {
                                 // the sdk will check IDB if it needs to resume, so we can't synchronously check that the script is there
@@ -6261,9 +6902,11 @@
                                     this.assertRecorderScript(true);
                                     return new Promise(_.bind(function (resolve) {
                                         this.randomStub.restore();
-                                        this.getRecorderScript().addEventListener('load', function() {
+                                        if (window['__mp_recorder']) {
                                             resolve();
-                                        });
+                                        } else {
+                                            this.getRecorderScript().addEventListener('load', resolve);
+                                        }
                                     }, this))
                                 }, this))
                                 .then(_.bind(function () {
@@ -6298,11 +6941,11 @@
                                     var store = transaction.objectStore(allStores[i]);
                                     store.clear();
                                 }
-                            }
+                            };
 
                             openRequest.onupgradeneeded = function () {
                                 isFresh = true; // idb doesn't exist yet, the sdk will make it
-                            }
+                            };
                         };
                     } else {
                         this.clearIDB = function () {};
@@ -6323,6 +6966,8 @@
                     if (this.responseBlobStub) {
                         this.responseBlobStub.restore();
                     }
+
+                    this.xhr.restore();
 
                     var scriptEl = this.getRecorderScript();
                     if (scriptEl) {
@@ -6426,9 +7071,11 @@
                         ok(urlParams2.get("$current_url").endsWith('#my-url-2'), 'url is updated at the start of this batch');
                         ok(urlParams2.get("replay_start_url").endsWith('#my-url-1'), 'start url does not change in later batches');
 
-                        mixpanel.recordertest.stop_session_recording();
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(function () {
                         start();
-                    }, this));
+                    });
             });
 
             asyncTest('can get replay properties when recording is active', 4, function () {
@@ -6444,7 +7091,6 @@
                     .then(_.bind(function () {
                         ok(Boolean(mixpanel.recordertest.get_session_recording_properties()["$mp_replay_id"]), 'replay id is populated in recording properties')
                         mixpanel.recordertest.stop_session_recording();
-                        return this.clock.tickAsync(10 * 1000);
                     }, this))
                     .then(this.waitForFetchCalls(1))
                     .then(start)
@@ -6468,7 +7114,6 @@
                         ok(replay_url.searchParams.get('replay_id'))
                         ok(replay_url.searchParams.get('distinct_id'))
                         mixpanel.recordertest.stop_session_recording();
-                        return this.clock.tickAsync(10 * 1000);
                     }, this))
                     .then(this.waitForFetchCalls(1))
                     .then(start)
@@ -6547,6 +7192,49 @@
                     }, this))
             });
 
+            asyncTest('does not track clicks when using recording and capturing heat map data is off', function () {
+                this.randomStub.returns(0.02);
+                this.initMixpanelRecorder({record_sessions_percent: 100, record_heatmap_data: false, batch_requests: false});
+                this.waitForRecorderLoad()
+                    .then(_.bind(function () {
+                        var e1 = ele_with_class();
+                        var originalHandlerCalled = false;
+                        e1.e.onclick = function() {
+                            originalHandlerCalled = true;
+                            return false;
+                        }
+
+                        simulateMouseClick(e1.e);
+
+                        same(this.requests.length, 0, "click event should not fire request");
+                        ok(originalHandlerCalled, "original click handler should also have been called");
+                    }, this))
+                    .then(start)
+            });
+
+            asyncTest('tracks clicks when using recording and capturing capturing heat map data is on', function () {
+                this.randomStub.returns(0.02);
+                this.initMixpanelRecorder({record_sessions_percent: 100, record_heatmap_data: true, batch_requests: false});
+                this.waitForRecorderLoad()
+                    .then(_.bind(function () {
+                        var e1 = ele_with_class();
+                        var originalHandlerCalled = false;
+                        e1.e.onclick = function() {
+                            originalHandlerCalled = true;
+                            return false;
+                        }
+
+                        simulateMouseClick(e1.e);
+
+                        same(this.requests.length, 1, "click event should fire request");
+                        var last_event = getRequestData(this.requests[0]);
+                        same(last_event.event, "$mp_click", "last request should be $mp_click event");
+                        same(last_event.properties.$captured_for_heatmap, true, "last request should be tagged as captured for heat map");
+                        ok(originalHandlerCalled, "original click handler should also have been called");
+                    }, this))
+                    .then(start)
+            });
+
             test('respects tracking opt-out when sampled', 3, function () {
                 this.randomStub.returns(0.02);
                 this.initMixpanelRecorder({record_sessions_percent: 10, window: {navigator: {doNotTrack: '1'}}});
@@ -6598,10 +7286,13 @@
                     .then(_.bind(function () {
                         same(this.fetchStub.getCalls().length, 1, 'no /record calls made after user has opted out.');
                         same(Object.keys(mixpanel.recordertest.get_session_recording_properties()).length, 0, 'no recording is taking place')
-                        mixpanel.recordertest.stop_session_recording();
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(function () {
                         start();
-                    }, this));
+                    });
             });
+
             asyncTest('retries record request after a 500', 17, function () {
                 this.randomStub.returns(0.02);
                 this.initMixpanelRecorder({record_sessions_percent: 10});
@@ -6646,9 +7337,11 @@
                         validateAndGetUrlParams(this.fetchStub.getCall(2));
                         same(urlParams.get("seq"), "1", "2nd sequence is retried");
 
-                        mixpanel.recordertest.stop_session_recording();
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(function () {
                         start();
-                    }, this));
+                    });
             });
 
             asyncTest('retries record requests when offline', 12, function () {
@@ -6697,10 +7390,11 @@
                         same(fetchBody, fetchCall1.args[1].body, 'fetch body should be the same as the first request');
                         onlineStub.restore();
                         compressionStreamStub.restore();
-                        mixpanel.recordertest.stop_session_recording();
-
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(function () {
                         start();
-                    }, this));
+                    });
             });
 
             asyncTest('halves batch size and retries record request after a 413', 25, function () {
@@ -6773,7 +7467,9 @@
                     }, this))
                     .then(_.bind(function () {
                         same(this.fetchStub.getCalls().length, 4, 'all events are flushed, no more requests are made');
-                        mixpanel.recordertest.stop_session_recording();
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(_.bind(function () {
                         this.blobConstructorSpy.restore();
                         start();
                     }, this));
@@ -6792,8 +7488,7 @@
                         return this.clock.tickAsync(5 * 1000);
                     }, this))
                     .then(_.bind(function () {
-                        mixpanel.recordertest.stop_session_recording();
-                        return this.clock.tickAsync(5 * 1000);
+                        return mixpanel.recordertest.stop_session_recording();
                     }, this))
                     .then(_.bind(function () {
                         same(this.fetchStub.getCalls().length, 0, 'does not flush events if session is too short');
@@ -6873,9 +7568,11 @@
                         same(urlParams2.get("seq"), "1");
                         same(replayId, urlParams2.get("replay_id"));
 
-                        mixpanel.recordertest.stop_session_recording();
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(function () {
                         start();
-                    }, this));
+                    });
             });
 
             asyncTest('resets after idle timeout', 14, function () {
@@ -6936,11 +7633,12 @@
                         var replayId2 = urlParams.get('replay_id');
                         ok(replayId1 !== replayId2, 'replay id is different after reset');
 
-                        mixpanel.recordertest.stop_session_recording();
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(function () {
                         start();
-                    }, this));
+                    });
             });
-
 
             asyncTest('handles race condition where the recording resets while a request is in flight', 16, function () {
                 if (!IS_RECORDER_BUNDLED) {
@@ -7011,9 +7709,68 @@
                         var replayId2 = urlParams.get('replay_id');
                         ok(replayId2 !== String(null), "replay id is not null");
                         ok(replayId1 !== replayId2, 'replay id is different after reset');
-                        mixpanel.recordertest.stop_session_recording();
-                        start();
+                        return mixpanel.recordertest.stop_session_recording();
                     }, this))
+                    .then(function () {
+                        start();
+                    });
+            });
+            
+            asyncTest('mixpanel.reset() changes replay_id', 10, function () {
+                this.randomStub.restore();
+                this.initMixpanelRecorder({record_sessions_percent: 100});
+                
+                var distinctId = mixpanel.recordertest.get_distinct_id();
+                this.responseBlobStub = sinon.stub(window.Response.prototype, 'blob');
+                this.responseBlobStub.returns(Promise.resolve(new Blob()));
+                this.fetchStub.onFirstCall()
+                    .returns(makeFakeFetchResponse(200))
+                    .onSecondCall()
+                    .returns(makeFakeFetchResponse(200));
+
+                var replayId1 = null;
+                this.waitForRecorderLoad()
+                    .then(_.bind(function () {
+                        return this.waitForRecorderEnqueue();
+                    }, this))
+                    .then(_.bind(function () {
+                        mixpanel.recordertest.reset();
+                        return this.waitForRecorderLoad();
+                    }, this))
+                    .then(this.waitForFetchCalls(1))
+                    .then(_.bind(function () {
+                        same(this.fetchStub.getCalls().length, 1, 'one batch fetch request made every ten seconds');
+                        var calledURL = this.fetchStub.getCall(0).args[0];
+                        var paramsStr = calledURL.split('?')[1];
+                        var urlParams = new URLSearchParams(paramsStr);
+
+                        same(urlParams.get('seq'), '0', 'sends first sequence');
+                        same(urlParams.get('distinct_id'), distinctId, 'distinct_id is set');
+                        replayId1 = urlParams.get('replay_id');
+
+                        document.body.appendChild(document.createElement('div'));
+                        return this.waitForRecorderEnqueue();
+                    }, this))
+                    .then(_.bind(function () {
+                        return this.clock.tickAsync(10 * 1000);
+                    }, this))
+                    .then(this.waitForFetchCalls(2))
+                    .then(_.bind(function () {
+                        same(this.fetchStub.getCalls().length, 2, 'Starts sending record requests again after user activity');
+                        var calledURL = this.fetchStub.getCall(1).args[0];
+                        var paramsStr = calledURL.split('?')[1];
+                        var urlParams = new URLSearchParams(paramsStr);
+
+                        same(urlParams.get('seq'), '0', 'resets to first sequence');
+                        var replayId2 = urlParams.get('replay_id');
+                        ok(replayId1 !== replayId2, 'replay id is different after reset');
+                        ok(urlParams.get('distinct_id') !== distinctId, 'distinct_id is different after reset');
+
+                        return mixpanel.recordertest.stop_session_recording();
+                    }, this))
+                    .then(function () {
+                        start();
+                    });
             });
         }
     };

@@ -1,3 +1,52 @@
+**2.71.0** (2 Oct 2025)
+- adds Dead Click ($mp_dead_click) autocapture event: when a click occurs but there is no DOM mutation afterwards
+- adds Page Leave ($mp_page_leave) autocapture event: when a page is "left" either by navigation or leaving the tab
+- adds additional properties to experiment exposure events for feature flags
+- upgrades rrweb fork to fix a hidden input masking issue
+- gets rid of package.json exports feature to be less restrictive of what can be imported
+- adds type definitions for each build option
+
+**2.70.0** (4 Sep 2025)
+- Feature flags requests now send params on query string with GET instead of POST for easier caching
+
+**2.68.0** (11 Aug 2025)
+- Initial rage-click detection support
+- Block `<audio>` tags by default in Session Recording
+- Add `flags.update_context()` method for updating context variables and refetching variants
+
+**2.67.0** (17 Jul 2025)
+- Use `get_api_host()` consistently across the SDK
+- Include `device_id` in default Feature Flag context
+- Track latency props in `$experiment_started` event
+- Fix async behavior in `mixpanel.reset()` when a session recording is active
+- Fix recorder integration test race conditions
+
+**2.66.0** (8 Jul 2025)
+- Add `api_host` configuration option to support different hosts/proxies for different endpoints (thanks @chrisknu)
+- Add types.d.ts from existing public repo
+- Fix race condition when calling `mixpanel.reset()` while a session recording is active
+
+**2.65.0** (20 May 2025)
+- `mixpanel.people.track_charge()` (deprecated) no longer sets profile property
+- Adds page height and width tracking to autocapture click tracking
+- Session recording now stops when mixpanel.reset() is called
+- Support for adding arbitrary query string params to tracking requests (thanks @dylan-asos)
+- Feature flagging API revisions
+- Whale Browser detection
+
+**2.64.0** (15 Apr 2025)
+- Add `record_heatmap_data` init option for Session Recording to ensure click events are captured for Heat Maps
+- Initial support for feature flagging
+
+**2.63.0** (1 Apr 2025)
+- Update rrweb to latest alpha version
+- Refactor SDK build process to rely mainly on Rollup
+
+**2.62.0** (26 Mar 2025)
+- Replace UUID generator with UUIDv4 (using native API when available)
+- Consistently use native JSON serialization when available
+- Fix for session recording idle timeout race condition
+
 **2.61.2** (14 Mar 2025)
 - Revert 10ms throttle on enqueueing events to improve tracking reliability on page unload
 

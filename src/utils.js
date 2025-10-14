@@ -839,71 +839,27 @@ _.utf8Encode = function(string) {
     return utftext;
 };
 
-_.UUID = (function() {
-
-    // Time-based entropy
-    var T = function() {
-        var time = 1 * new Date(); // cross-browser version of Date.now()
-        var ticks;
-        if (window.performance && window.performance.now) {
-            ticks = window.performance.now();
-        } else {
-            // fall back to busy loop
-            ticks = 0;
-
-            // this while loop figures how many browser ticks go by
-            // before 1*new Date() returns a new number, ie the amount
-            // of ticks that go by per millisecond
-            while (time == 1 * new Date()) {
-                ticks++;
-            }
+_.UUID = function() {
+    try {
+        // use native Crypto API when available
+        return window['crypto']['randomUUID']();
+    } catch (err) {
+        // fall back to generating our own UUID
+        // based on https://gist.github.com/scwood/3bff42cc005cc20ab7ec98f0d8e1d59d
+        var uuid = new Array(36);
+        for (var i = 0; i < 36; i++) {
+            uuid[i] = Math.floor(Math.random() * 16);
         }
-        return time.toString(16) + Math.floor(ticks).toString(16);
-    };
+        uuid[14] = 4; // set bits 12-15 of time-high-and-version to 0100
+        uuid[19] = uuid[19] &= ~(1 << 2); // set bit 6 of clock-seq-and-reserved to zero
+        uuid[19] = uuid[19] |= (1 << 3); // set bit 7 of clock-seq-and-reserved to one
+        uuid[8] = uuid[13] = uuid[18] = uuid[23] = '-';
 
-    // Math.Random entropy
-    var R = function() {
-        return Math.random().toString(16).replace('.', '');
-    };
-
-    // User agent entropy
-    // This function takes the user agent string, and then xors
-    // together each sequence of 8 bytes.  This produces a final
-    // sequence of 8 bytes which it returns as hex.
-    var UA = function() {
-        var ua = userAgent,
-            i, ch, buffer = [],
-            ret = 0;
-
-        function xor(result, byte_array) {
-            var j, tmp = 0;
-            for (j = 0; j < byte_array.length; j++) {
-                tmp |= (buffer[j] << j * 8);
-            }
-            return result ^ tmp;
-        }
-
-        for (i = 0; i < ua.length; i++) {
-            ch = ua.charCodeAt(i);
-            buffer.unshift(ch & 0xFF);
-            if (buffer.length >= 4) {
-                ret = xor(ret, buffer);
-                buffer = [];
-            }
-        }
-
-        if (buffer.length > 0) {
-            ret = xor(ret, buffer);
-        }
-
-        return ret.toString(16);
-    };
-
-    return function() {
-        var se = (screen.height * screen.width).toString(16);
-        return (T() + '-' + R() + '-' + UA() + '-' + se + '-' + T());
-    };
-})();
+        return _.map(uuid, function(x) {
+            return x.toString(16);
+        }).join('');
+    }
+};
 
 // _.isBlockedUA()
 // This is to block various web spiders from executing our JS and
@@ -1527,6 +1483,9 @@ _.info = {
             return 'Microsoft Edge';
         } else if (_.includes(user_agent, 'FBIOS')) {
             return 'Facebook Mobile';
+        } else if (_.includes(user_agent, 'Whale/')) {
+            // https://user-agents.net/browsers/whale-browser
+            return 'Whale Browser';
         } else if (_.includes(user_agent, 'Chrome')) {
             return 'Chrome';
         } else if (_.includes(user_agent, 'CriOS')) {
@@ -1578,7 +1537,8 @@ _.info = {
             'Android Mobile': /android\s(\d+(\.\d+)?)/,
             'Samsung Internet': /SamsungBrowser\/(\d+(\.\d+)?)/,
             'Internet Explorer': /(rv:|MSIE )(\d+(\.\d+)?)/,
-            'Mozilla': /rv:(\d+(\.\d+)?)/
+            'Mozilla': /rv:(\d+(\.\d+)?)/,
+            'Whale Browser': /Whale\/(\d+(\.\d+)?)/
         };
         var regex = versionRegexs[browser];
         if (regex === undefined) {
@@ -1717,6 +1677,20 @@ var cheap_guid = function(maxlen) {
     return maxlen ? guid.substring(0, maxlen) : guid;
 };
 
+/**
+ * Generates a W3C traceparent header for easy interop with distributed tracing systems i.e Open Telemetry
+ * https://www.w3.org/TR/trace-context/#traceparent-header
+*/
+var generateTraceparent = function() {
+    var traceID = _.UUID().replace(/-/g, '');
+    var parentID = _.UUID().replace(/-/g, '').substring(0, 16);
+
+    // Sampled trace
+    var traceFlags = '01';
+
+    return '00-' + traceID + '-' + parentID + '-' + traceFlags;
+};
+
 // naive way to extract domain name (example.com) from full hostname (my.sub.example.com)
 var SIMPLE_DOMAIN_MATCH_REGEX = /[a-z0-9][a-z0-9-]*\.[a-z]+$/i;
 // this next one attempts to account for some ccSLDs, e.g. extracting oxford.ac.uk from www.oxford.ac.uk
@@ -1786,6 +1760,7 @@ export {
     console,
     document,
     extract_domain,
+    generateTraceparent,
     JSONParse,
     JSONStringify,
     isOnline,
